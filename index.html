@@ -283,14 +283,18 @@ async function callGemini(userText){
 }
 
 /* ============ INPUT HANDLING ============ */
+let awaitingReply = false;
 async function handleInput(text){
   if(!text || !text.trim()) return;
+  if(awaitingReply) return; // ignore duplicate/overlapping triggers while one is in flight
+  awaitingReply = true;
   logLine('user', text);
 
   const localReply = tryLocalSkill(text);
   if(localReply !== null){
     logLine('arc', localReply);
     speak(localReply);
+    awaitingReply = false;
     return;
   }
 
@@ -301,6 +305,7 @@ async function handleInput(text){
   if(sysLines.length) sysLines[sysLines.length-1].remove();
   logLine('arc', reply);
   speak(reply);
+  awaitingReply = false;
 }
 
 /* ============ VOICE INPUT ============ */
@@ -312,7 +317,10 @@ function setupRecognition(){
   r.interimResults = false;
   r.maxAlternatives = 1;
   r.onresult = (e) => {
+    if(r._handled) return; // some browsers (notably Android Chrome) can fire
+    r._handled = true;     // onresult more than once per session — only act on the first
     const transcript = e.results[0][0].transcript;
+    try{ r.stop(); }catch(err){ /* already stopping */ }
     handleInput(transcript);
   };
   r.onend = () => { listening = false; micBtn.classList.remove('on'); hud.classList.remove('listening'); };
@@ -331,6 +339,7 @@ micBtn.addEventListener('click', () => {
   if(listening){
     recognition.stop();
   } else {
+    recognition._handled = false;
     listening = true;
     micBtn.classList.add('on');
     hud.classList.add('listening');
