@@ -162,6 +162,7 @@ let userName = localStorage.getItem('arc_userName') || '';
 let clientSecret = localStorage.getItem('arc_secret') || '';
 let model = localStorage.getItem('arc_model') || GEMINI_MODEL_DEFAULT;
 let notes = JSON.parse(localStorage.getItem('arc_notes') || '[]');
+let reminders = JSON.parse(localStorage.getItem('arc_reminders') || '[]'); // [{id, time, text, isAlarm}]
 let history = []; // [{role:'user'|'model', parts:[{text}]}]
 let listening = false;
 let recognition = null;
@@ -190,6 +191,60 @@ function speak(text){
   window.speechSynthesis.speak(u);
 }
 
+/* ============ REMINDERS / ALARMS ============ */
+function saveReminders(){
+  localStorage.setItem('arc_reminders', JSON.stringify(reminders.map(({id, time, text, isAlarm}) => ({id, time, text, isAlarm}))));
+}
+
+function formatTime(date){
+  return date.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+}
+
+// Resolves a spoken hour/minute/meridiem into the next real Date it refers to.
+// No am/pm given -> treated as a 24-hour hour (e.g. "at 15" = 3pm, "at 7" = 7am).
+function resolveTime(hStr, minStr, meridiem, forceTomorrow){
+  let h = parseInt(hStr, 10);
+  const min = minStr ? parseInt(minStr, 10) : 0;
+  if(meridiem){
+    meridiem = meridiem.toLowerCase();
+    if(meridiem === 'pm' && h !== 12) h += 12;
+    if(meridiem === 'am' && h === 12) h = 0;
+  }
+  const target = new Date();
+  target.setHours(h, min, 0, 0);
+  if(forceTomorrow || target.getTime() <= Date.now()) target.setDate(target.getDate() + 1);
+  return target;
+}
+
+function fireReminder(r){
+  if(!reminders.some(x => x.id === r.id)) return; // cleared/cancelled before it fired
+  const msg = r.isAlarm ? "your alarm is going off" : r.text;
+  logLine('sys', `${r.isAlarm ? 'Alarm' : 'Reminder'}: ${r.text}`);
+  speak(`${userName || 'Sir'}, ${msg}.`);
+  if('Notification' in window && Notification.permission === 'granted'){
+    try{ new Notification(r.isAlarm ? 'ARC Alarm' : 'ARC Reminder', { body: r.text }); }catch(e){ /* ignore */ }
+  }
+  reminders = reminders.filter(x => x.id !== r.id);
+  saveReminders();
+}
+
+// Returns false if the time has already passed (nothing to schedule).
+function scheduleReminder(r){
+  const delay = r.time - Date.now();
+  if(delay <= 0) return false;
+  setTimeout(() => fireReminder(r), delay);
+  return true;
+}
+
+function addReminder(time, text, isAlarm){
+  const r = { id: Date.now() + Math.random(), time, text, isAlarm: !!isAlarm };
+  if(!scheduleReminder(r)) return null;
+  reminders.push(r);
+  saveReminders();
+  if('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+  return r;
+}
+
 /* ============ LOCAL SKILLS ============ */
 function tryLocalSkill(raw){
   const text = raw.trim().toLowerCase();
@@ -215,6 +270,49 @@ function tryLocalSkill(raw){
       speak(`${userName || 'Sir'}, your ${n} ${unit} timer is up.`);
     }, ms);
     return `Timer set for ${n} ${unit}${n>1?'s':''}.`;
+  }
+
+  // reminders: "remind me at 3pm to call mom" / "remind me tomorrow at 9am to submit report"
+  m = raw.match(/^remind me(?:\s+(tomorrow))?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+to\s+(.+)/i);
+  if(m){
+    const [, tomorrowFlag, hStr, minStr, meridiem, task] = m;
+    const target = resolveTime(hStr, minStr, meridiem, !!tomorrowFlag);
+    if(addReminder(target.getTime(), task.trim(), false)) return `Reminder set for ${formatTime(target)}: ${task.trim()}.`;
+  }
+
+  // reminders: "remind me in 20 minutes to check the oven"
+  m = raw.match(/^remind me in (\d+)\s*(second|sec|minute|min|hour|hr)s?\s+to\s+(.+)/i);
+  if(m){
+    const n = parseInt(m[1], 10);
+    const unit = m[2].toLowerCase();
+    let ms = n * 1000;
+    if(unit.startsWith('min')) ms = n * 60 * 1000;
+    if(unit.startsWith('hour') || unit === 'hr') ms = n * 3600 * 1000;
+    const target = new Date(Date.now() + ms);
+    const task = m[3].trim();
+    if(addReminder(target.getTime(), task, false)) return `Reminder set for ${formatTime(target)}: ${task}.`;
+  }
+
+  // alarm: "set an alarm for 7am" / "wake me up at 6:30am"
+  m = raw.match(/^(?:set an alarm for|wake me up at)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if(m){
+    const [, hStr, minStr, meridiem] = m;
+    const target = resolveTime(hStr, minStr, meridiem, false);
+    if(addReminder(target.getTime(), 'Your alarm is going off.', true)) return `Alarm set for ${formatTime(target)}.`;
+  }
+
+  // list reminders/alarms
+  if(/\b(list my reminders|what are my reminders|my reminders|list my alarms|my alarms)\b/.test(text)){
+    if(reminders.length === 0) return "You don't have any reminders set.";
+    return reminders.slice().sort((a,b) => a.time - b.time)
+      .map((r, i) => `${i+1}. ${formatTime(new Date(r.time))} — ${r.text}`).join('  ');
+  }
+
+  // clear all reminders/alarms
+  if(/\b(clear my reminders|cancel all reminders|clear my alarms|cancel all alarms)\b/.test(text)){
+    reminders = [];
+    saveReminders();
+    return 'All reminders cleared.';
   }
 
   // notes
@@ -416,6 +514,17 @@ function clearNotes(){
 document.getElementById('settings-btn').addEventListener('click', openSettings);
 
 /* ============ INIT ============ */
+// Re-arm any reminders/alarms that were still pending when ARC last closed.
+(function rearmReminders(){
+  const stillValid = [];
+  reminders.forEach(r => {
+    if(scheduleReminder(r)) stillValid.push(r);
+    else logLine('sys', `Missed while ARC was closed — ${r.isAlarm ? 'alarm' : 'reminder'}: ${r.text}`);
+  });
+  reminders = stillValid;
+  saveReminders();
+})();
+
 logLine('sys', userName ? `Welcome back, ${userName}.` : 'Welcome. Open settings to set your name.');
 
 /* ============ PWA: service worker ============ */
