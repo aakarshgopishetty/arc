@@ -13,3 +13,11 @@ Thumbs.db
 # Editor
 .vscode/
 *.swp
+
+# Node / Capacitor
+node_modules/
+
+# Capacitor build outputs — regenerated from index.html/manifest.json/sw.js/icons
+# via `npm install && cap add android && cap sync android`, no need to version them
+www/
+android/

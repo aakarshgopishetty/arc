@@ -1,0 +1,18 @@
+{
+  "name": "arc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ARC (Autonomous Reactive Companion) — Capacitor Android wrapper",
+  "scripts": {
+    "sync": "npx cap sync android",
+    "open:android": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/local-notifications": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0"
+  }
+}

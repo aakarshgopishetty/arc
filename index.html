@@ -192,6 +192,21 @@ function speak(text){
 }
 
 /* ============ REMINDERS / ALARMS ============ */
+// Runs on the open web (Vercel/GitHub Pages) using setTimeout + the browser
+// Notification API, or natively inside the Capacitor Android wrapper using
+// real OS-scheduled notifications that fire even if ARC is fully closed.
+const isNativeApp = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const LocalNotifications = isNativeApp ? window.Capacitor.Plugins.LocalNotifications : null;
+if(isNativeApp && LocalNotifications) LocalNotifications.requestPermissions().catch(()=>{});
+
+// LocalNotifications needs small integer ids, not the float ids we used before.
+let reminderIdCounter = parseInt(localStorage.getItem('arc_reminder_id_counter') || '1', 10);
+function nextReminderId(){
+  const id = reminderIdCounter++;
+  localStorage.setItem('arc_reminder_id_counter', String(reminderIdCounter));
+  return id;
+}
+
 function saveReminders(){
   localStorage.setItem('arc_reminders', JSON.stringify(reminders.map(({id, time, text, isAlarm}) => ({id, time, text, isAlarm}))));
 }
@@ -216,28 +231,56 @@ function resolveTime(hStr, minStr, meridiem, forceTomorrow){
   return target;
 }
 
-function fireReminder(r){
-  if(!reminders.some(x => x.id === r.id)) return; // cleared/cancelled before it fired
-  const msg = r.isAlarm ? "your alarm is going off" : r.text;
-  logLine('sys', `${r.isAlarm ? 'Alarm' : 'Reminder'}: ${r.text}`);
-  speak(`${userName || 'Sir'}, ${msg}.`);
-  if('Notification' in window && Notification.permission === 'granted'){
-    try{ new Notification(r.isAlarm ? 'ARC Alarm' : 'ARC Reminder', { body: r.text }); }catch(e){ /* ignore */ }
+// Shared bookkeeping once a reminder has actually fired, from either path below.
+function markReminderFired(id, speakIt){
+  const r = reminders.find(x => x.id === id);
+  if(!r) return; // cleared/cancelled before it fired
+  if(speakIt){
+    const msg = r.isAlarm ? "your alarm is going off" : r.text;
+    logLine('sys', `${r.isAlarm ? 'Alarm' : 'Reminder'}: ${r.text}`);
+    speak(`${userName || 'Sir'}, ${msg}.`);
   }
   reminders = reminders.filter(x => x.id !== r.id);
   saveReminders();
+}
+
+// Browser path only: setTimeout + a Web Notification (foreground/backgrounded tab only).
+function fireReminderInBrowser(r){
+  if(!reminders.some(x => x.id === r.id)) return;
+  if('Notification' in window && Notification.permission === 'granted'){
+    try{ new Notification(r.isAlarm ? 'ARC Alarm' : 'ARC Reminder', { body: r.text }); }catch(e){ /* ignore */ }
+  }
+  markReminderFired(r.id, true);
+}
+
+if(isNativeApp && LocalNotifications){
+  // The OS shows the notification itself even if ARC is closed; these listeners
+  // just let ARC speak/log it too when the app happens to be open at the time.
+  LocalNotifications.addListener('localNotificationReceived', (n) => markReminderFired(n.id, true));
+  LocalNotifications.addListener('localNotificationActionPerformed', (a) => markReminderFired(a.notification.id, true));
 }
 
 // Returns false if the time has already passed (nothing to schedule).
 function scheduleReminder(r){
   const delay = r.time - Date.now();
   if(delay <= 0) return false;
-  setTimeout(() => fireReminder(r), delay);
+  if(isNativeApp && LocalNotifications){
+    LocalNotifications.schedule({
+      notifications: [{
+        id: r.id,
+        title: r.isAlarm ? 'ARC Alarm' : 'ARC Reminder',
+        body: r.text,
+        schedule: { at: new Date(r.time) }
+      }]
+    }).catch(err => console.error('LocalNotifications.schedule failed', err));
+  } else {
+    setTimeout(() => fireReminderInBrowser(r), delay);
+  }
   return true;
 }
 
 function addReminder(time, text, isAlarm){
-  const r = { id: Date.now() + Math.random(), time, text, isAlarm: !!isAlarm };
+  const r = { id: nextReminderId(), time, text, isAlarm: !!isAlarm };
   if(!scheduleReminder(r)) return null;
   reminders.push(r);
   saveReminders();
@@ -245,7 +288,69 @@ function addReminder(time, text, isAlarm){
   return r;
 }
 
-/* ============ LOCAL SKILLS ============ */
+/* ============ SKILL ACTIONS ============ */
+// Pure(ish) action functions, each returning a confirmation string. Shared by
+// the hand-written regex matcher below (tryLocalSkill) and by the Gemini
+// function-calling dispatcher (executeFunctionCall) so both paths behave
+// identically and there's exactly one place that knows how to, say, set a
+// reminder.
+function actionSetReminder(target, task){
+  if(!(target instanceof Date) || isNaN(target.getTime())) throw new Error('Invalid date/time for reminder.');
+  if(!addReminder(target.getTime(), task, false)) throw new Error("That time has already passed.");
+  return `Reminder set for ${formatTime(target)}: ${task}.`;
+}
+function actionSetAlarm(target){
+  if(!(target instanceof Date) || isNaN(target.getTime())) throw new Error('Invalid date/time for alarm.');
+  if(!addReminder(target.getTime(), 'Your alarm is going off.', true)) throw new Error("That time has already passed.");
+  return `Alarm set for ${formatTime(target)}.`;
+}
+function actionSetTimer(seconds, label){
+  const n = Math.max(1, Math.round(seconds));
+  setTimeout(() => {
+    logLine('sys', `Timer done${label ? ': ' + label : ''}`);
+    speak(`${userName || 'Sir'}, your ${label ? label + ' ' : ''}timer is up.`);
+  }, n * 1000);
+  return `Timer set for ${n} second${n===1?'':'s'}${label ? ' (' + label + ')' : ''}.`;
+}
+function actionListReminders(){
+  if(reminders.length === 0) return "You don't have any reminders set.";
+  return reminders.slice().sort((a,b) => a.time - b.time)
+    .map((r, i) => `${i+1}. ${formatTime(new Date(r.time))} — ${r.text}`).join('  ');
+}
+function actionClearReminders(){
+  if(isNativeApp && LocalNotifications && reminders.length){
+    LocalNotifications.cancel({ notifications: reminders.map(r => ({ id: r.id })) }).catch(()=>{});
+  }
+  reminders = [];
+  saveReminders();
+  return 'All reminders cleared.';
+}
+function actionAddNote(text){
+  notes.push({ text, ts: Date.now() });
+  localStorage.setItem('arc_notes', JSON.stringify(notes));
+  return 'Noted.';
+}
+function actionListNotes(){
+  if(notes.length === 0) return "You don't have any notes yet.";
+  return notes.map((n, i) => `${i+1}. ${n.text}`).join('  ');
+}
+function actionOpenSite(rawSite){
+  let site = rawSite.trim();
+  const label = site;
+  if(!site.includes('.')) site = site + '.com';
+  if(!/^https?:\/\//.test(site)) site = 'https://' + site;
+  window.open(site, '_blank');
+  return `Opening ${label}.`;
+}
+function actionCalculate(rawExpr){
+  const expr = rawExpr.replace(/\^/g, '**');
+  if(!/^[0-9+\-*/().\s*]+$/.test(expr)) throw new Error('Unsafe or unparseable expression.');
+  const result = Function(`"use strict"; return (${expr})`)();
+  if(typeof result !== 'number' || !isFinite(result)) throw new Error('Expression did not evaluate to a number.');
+  return `That's ${result}.`;
+}
+
+/* ============ LOCAL SKILLS (regex fast path) ============ */
 function tryLocalSkill(raw){
   const text = raw.trim().toLowerCase();
 
@@ -262,14 +367,10 @@ function tryLocalSkill(raw){
   if(m){
     const n = parseInt(m[1], 10);
     const unit = m[2];
-    let ms = n * 1000;
-    if(unit.startsWith('min')) ms = n * 60 * 1000;
-    if(unit.startsWith('hour') || unit === 'hr') ms = n * 3600 * 1000;
-    setTimeout(() => {
-      logLine('sys', `Timer done: ${n} ${unit}${n>1?'s':''}`);
-      speak(`${userName || 'Sir'}, your ${n} ${unit} timer is up.`);
-    }, ms);
-    return `Timer set for ${n} ${unit}${n>1?'s':''}.`;
+    let seconds = n;
+    if(unit.startsWith('min')) seconds = n * 60;
+    if(unit.startsWith('hour') || unit === 'hr') seconds = n * 3600;
+    return actionSetTimer(seconds, null).replace(/\d+ seconds?/, `${n} ${unit}${n>1?'s':''}`);
   }
 
   // reminders: "remind me at 3pm to call mom" / "remind me tomorrow at 9am to submit report"
@@ -277,7 +378,7 @@ function tryLocalSkill(raw){
   if(m){
     const [, tomorrowFlag, hStr, minStr, meridiem, task] = m;
     const target = resolveTime(hStr, minStr, meridiem, !!tomorrowFlag);
-    if(addReminder(target.getTime(), task.trim(), false)) return `Reminder set for ${formatTime(target)}: ${task.trim()}.`;
+    try{ return actionSetReminder(target, task.trim()); }catch(e){ /* fall through to Gemini */ }
   }
 
   // reminders: "remind me in 20 minutes to check the oven"
@@ -289,8 +390,7 @@ function tryLocalSkill(raw){
     if(unit.startsWith('min')) ms = n * 60 * 1000;
     if(unit.startsWith('hour') || unit === 'hr') ms = n * 3600 * 1000;
     const target = new Date(Date.now() + ms);
-    const task = m[3].trim();
-    if(addReminder(target.getTime(), task, false)) return `Reminder set for ${formatTime(target)}: ${task}.`;
+    try{ return actionSetReminder(target, m[3].trim()); }catch(e){ /* fall through to Gemini */ }
   }
 
   // alarm: "set an alarm for 7am" / "wake me up at 6:30am"
@@ -298,73 +398,122 @@ function tryLocalSkill(raw){
   if(m){
     const [, hStr, minStr, meridiem] = m;
     const target = resolveTime(hStr, minStr, meridiem, false);
-    if(addReminder(target.getTime(), 'Your alarm is going off.', true)) return `Alarm set for ${formatTime(target)}.`;
+    try{ return actionSetAlarm(target); }catch(e){ /* fall through to Gemini */ }
   }
 
   // list reminders/alarms
   if(/\b(list my reminders|what are my reminders|my reminders|list my alarms|my alarms)\b/.test(text)){
-    if(reminders.length === 0) return "You don't have any reminders set.";
-    return reminders.slice().sort((a,b) => a.time - b.time)
-      .map((r, i) => `${i+1}. ${formatTime(new Date(r.time))} — ${r.text}`).join('  ');
+    return actionListReminders();
   }
 
   // clear all reminders/alarms
   if(/\b(clear my reminders|cancel all reminders|clear my alarms|cancel all alarms)\b/.test(text)){
-    reminders = [];
-    saveReminders();
-    return 'All reminders cleared.';
+    return actionClearReminders();
   }
 
   // notes
   m = raw.match(/^(?:take a note|note)[:\-]?\s*(.+)/i);
   if(m){
-    notes.push({ text: m[1].trim(), ts: Date.now() });
-    localStorage.setItem('arc_notes', JSON.stringify(notes));
-    return 'Noted.';
+    return actionAddNote(m[1].trim());
   }
   if(/\b(read my notes|what are my notes|list my notes)\b/.test(text)){
-    if(notes.length === 0) return "You don't have any notes yet.";
-    return notes.map((n, i) => `${i+1}. ${n.text}`).join('  ');
+    return actionListNotes();
   }
 
   // math: "what is 12 * 4 + 3" / "calculate 2^10"
   m = text.match(/(?:what is|calculate|compute)\s+([0-9+\-*/^().\s]+)$/);
   if(m || /^[0-9+\-*/^().\s]+$/.test(text)){
-    const expr = (m ? m[1] : text).replace(/\^/g, '**');
-    try{
-      // Restrict to digits/operators only before evaluating
-      if(!/^[0-9+\-*/().\s*]+$/.test(expr)) throw new Error('unsafe');
-      const result = Function(`"use strict"; return (${expr})`)();
-      if(typeof result === 'number' && isFinite(result)) return `That's ${result}.`;
-    }catch(e){ /* fall through to Gemini */ }
+    try{ return actionCalculate(m ? m[1] : text); }catch(e){ /* fall through to Gemini */ }
   }
 
   // open [site]
   m = text.match(/^open (.+)/);
   if(m){
-    let site = m[1].trim();
-    if(!site.includes('.')) site = site + '.com';
-    if(!/^https?:\/\//.test(site)) site = 'https://' + site;
-    window.open(site, '_blank');
-    return `Opening ${m[1].trim()}.`;
+    return actionOpenSite(m[1].trim());
   }
 
   return null; // no local skill matched
+}
+
+/* ============ GEMINI FUNCTION-CALLING DISPATCH ============ */
+// Executes one {name, args} call from Gemini against the same actions the
+// regex path uses above, and returns the {name, response} shape the /api/gemini
+// follow-up request expects. Never throws — a failed call is reported back to
+// Gemini as an error result so it can explain the problem in its own words,
+// rather than crashing the turn.
+function executeFunctionCall(call){
+  const { name, args } = call;
+  try{
+    let result;
+    switch(name){
+      case 'set_reminder':
+        result = actionSetReminder(new Date(args.iso_datetime), String(args.task || '').trim() || 'something');
+        break;
+      case 'set_alarm':
+        result = actionSetAlarm(new Date(args.iso_datetime));
+        break;
+      case 'set_timer':
+        result = actionSetTimer(Number(args.seconds), args.label ? String(args.label).trim() : null);
+        break;
+      case 'list_reminders':
+        result = actionListReminders();
+        break;
+      case 'clear_reminders':
+        result = actionClearReminders();
+        break;
+      case 'add_note':
+        result = actionAddNote(String(args.text || '').trim());
+        break;
+      case 'list_notes':
+        result = actionListNotes();
+        break;
+      case 'open_site':
+        result = actionOpenSite(String(args.site || ''));
+        break;
+      case 'calculate':
+        result = actionCalculate(String(args.expression || ''));
+        break;
+      default:
+        return { name, response: { error: `Unknown tool "${name}".` } };
+    }
+    return { name, response: { result } };
+  }catch(e){
+    console.error(`executeFunctionCall(${name}) failed`, e);
+    return { name, response: { error: e.message || String(e) } };
+  }
 }
 
 /* ============ GEMINI FALLBACK ============ */
 // System prompt now lives server-side in api/gemini.js (kept in sync there).
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-async function tryCallGemini(userText, priorHistory, headers, useModel){
+async function tryCallGemini(body, headers){
   const res = await fetch(GEMINI_PROXY_ENDPOINT, {
     method:'POST',
     headers,
-    body: JSON.stringify({ message:userText, history:priorHistory, userName, model:useModel })
+    body: JSON.stringify(body)
   });
   let data;
   try{ data = await res.json(); }catch(e){ data = null; }
   return { ok: res.ok, status: res.status, data };
+}
+
+// Sends one body to /api/gemini with the standard 503 retry + fallback-model
+// behavior. Used for both the initial turn and the function-calling follow-up.
+async function callGeminiWithRetry(body, headers, primaryModel){
+  let result = await tryCallGemini(body, headers);
+  const backoffs = [1500, 3000]; // ms — up to 2 retries on the primary model
+  for(let i = 0; i < backoffs.length && !result.ok && result.status === 503; i++){
+    console.warn(`Gemini overloaded (503) — retrying in ${backoffs[i]}ms`);
+    await sleep(backoffs[i]);
+    result = await tryCallGemini(body, headers);
+  }
+  // primary model still overloaded — try a different, less-congested model once
+  if(!result.ok && result.status === 503 && GEMINI_FALLBACK_MODEL !== primaryModel){
+    console.warn(`Still overloaded — falling back to ${GEMINI_FALLBACK_MODEL}`);
+    result = await tryCallGemini({ ...body, model: GEMINI_FALLBACK_MODEL }, headers);
+  }
+  return result;
 }
 
 async function callGemini(userText){
@@ -372,24 +521,50 @@ async function callGemini(userText){
   const headers = { 'Content-Type':'application/json' };
   if(clientSecret) headers['x-arc-secret'] = clientSecret;
   const primaryModel = model || GEMINI_MODEL_DEFAULT;
+  const nowISO = new Date().toISOString();
+  const tzOffsetMinutes = new Date().getTimezoneOffset();
+
   try{
-    let result = await tryCallGemini(userText, priorHistory, headers, primaryModel);
-    const backoffs = [1500, 3000]; // ms — up to 2 retries on the primary model
-    for(let i = 0; i < backoffs.length && !result.ok && result.status === 503; i++){
-      console.warn(`Gemini overloaded (503) — retrying in ${backoffs[i]}ms`);
-      await sleep(backoffs[i]);
-      result = await tryCallGemini(userText, priorHistory, headers, primaryModel);
-    }
-    // primary model still overloaded — try a different, less-congested model once
-    if(!result.ok && result.status === 503 && GEMINI_FALLBACK_MODEL !== primaryModel){
-      console.warn(`Still overloaded — falling back to ${GEMINI_FALLBACK_MODEL}`);
-      result = await tryCallGemini(userText, priorHistory, headers, GEMINI_FALLBACK_MODEL);
-    }
+    let result = await callGeminiWithRetry(
+      { message:userText, history:priorHistory, userName, model:primaryModel, nowISO, tzOffsetMinutes },
+      headers, primaryModel
+    );
     if(!result.ok){
       console.error('Gemini proxy error', result.status, result.data);
       const msg = result.data?.error || `status ${result.status}`;
       return `I hit an error talking to Gemini (${msg}).`;
     }
+
+    // Gemini asked to call one or more local skills instead of replying —
+    // execute them here, then send the results back for a final spoken reply.
+    if(Array.isArray(result.data?.functionCalls) && result.data.functionCalls.length){
+      const calls = result.data.functionCalls;
+      const modelTurnParts = result.data.modelTurnParts || [];
+      logLine('sys', `→ ${calls.map(c => c.name).join(', ')}`);
+      const functionResults = calls.map(executeFunctionCall);
+
+      const followUpHistory = [
+        ...priorHistory,
+        { role:'user', parts:[{ text:userText }] }
+      ];
+      const followUp = await callGeminiWithRetry(
+        { history: followUpHistory, functionResults, modelTurnParts, userName, model: primaryModel, nowISO, tzOffsetMinutes },
+        headers, primaryModel
+      );
+      if(!followUp.ok){
+        console.error('Gemini follow-up error', followUp.status, followUp.data);
+        // The action(s) already ran locally — tell the user that succeeded even
+        // though we couldn't get Gemini's phrasing of it.
+        return functionResults.map(fr => fr.response?.result || fr.response?.error).filter(Boolean).join('  ');
+      }
+      const finalReply = followUp.data?.reply || "Done.";
+      history.push({ role:'user', parts:[{ text:userText }] });
+      history.push({ role:'model', parts: modelTurnParts });
+      history.push({ role:'function', parts: functionResults.map(fr => ({ functionResponse: { name: fr.name, response: fr.response } })) });
+      history.push({ role:'model', parts:[{ text: finalReply }] });
+      return finalReply;
+    }
+
     const reply = result.data?.reply || "I didn't get a usable response back.";
     history.push({ role:'user', parts:[{ text:userText }] });
     history.push({ role:'model', parts:[{ text: reply }] });
