@@ -1,0 +1,15 @@
+# Vercel
+.vercel
+
+# Environment variables (never commit real secrets)
+.env
+.env.local
+.env*.local
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp

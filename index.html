@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ARC</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="icons/icon-192.png">
+
+<style>
+  :root{
+    --cyan:#38e8ff;
+    --cyan-dim:#1e8ca0;
+    --bg:#000000;
+    --panel:#050b0c;
+    --text:#d6faff;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow:hidden;
+  }
+  #app{
+    display:flex; flex-direction:column; align-items:center; justify-content:space-between;
+    height:100%; width:100%; padding:16px; position:relative;
+  }
+
+  /* ---- HUD ---- */
+  #hud-wrap{ flex:1; display:flex; align-items:center; justify-content:center; width:100%; }
+  #hud{ width:min(70vw, 320px); height:min(70vw, 320px); }
+  .ring{ fill:none; stroke:var(--cyan); opacity:.85; }
+  .ring-dim{ fill:none; stroke:var(--cyan-dim); }
+  .ring-spin{ transform-origin:150px 150px; animation:spin 12s linear infinite; }
+  .ring-spin-rev{ transform-origin:150px 150px; animation:spin 18s linear infinite reverse; }
+  @keyframes spin{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
+  #core{ fill:var(--cyan); filter:drop-shadow(0 0 12px var(--cyan)); animation:pulse 2.2s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:.75; r:26;} 50%{opacity:1; r:32;} }
+  #hud.listening #core{ animation:pulse 0.6s ease-in-out infinite; }
+  #hud.listening .ring{ stroke:#ffffff; }
+
+  /* ---- Transcript ---- */
+  #log{
+    width:100%; max-width:520px; flex:0 0 auto; max-height:22vh; overflow-y:auto;
+    font-size:14px; line-height:1.4; padding:8px 4px; -webkit-overflow-scrolling:touch;
+  }
+  #log p{ margin:4px 0; }
+  #log .user{ color:var(--cyan); }
+  #log .arc{ color:var(--text); }
+  #log .sys{ color:var(--cyan-dim); font-style:italic; }
+
+  /* ---- Controls ---- */
+  #controls{
+    width:100%; max-width:520px; display:flex; gap:8px; align-items:center;
+    padding-bottom:env(safe-area-inset-bottom, 8px);
+  }
+  #mic-btn{
+    flex:0 0 auto; width:56px; height:56px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #0e2f34, #020506);
+    border:2px solid var(--cyan); color:var(--cyan); font-size:22px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    box-shadow:0 0 10px rgba(56,232,255,.4);
+  }
+  #mic-btn.on{ background:var(--cyan); color:#000; box-shadow:0 0 20px var(--cyan); }
+  #text-input{
+    flex:1; background:var(--panel); border:1px solid var(--cyan-dim); color:var(--text);
+    border-radius:20px; padding:12px 16px; font-size:15px; outline:none;
+  }
+  #send-btn{
+    flex:0 0 auto; background:none; border:1px solid var(--cyan-dim); color:var(--cyan);
+    border-radius:20px; padding:0 16px; height:44px; cursor:pointer;
+  }
+  #settings-btn{
+    position:absolute; top:14px; right:14px; background:none; border:none; color:var(--cyan-dim);
+    font-size:22px; cursor:pointer; z-index:5;
+  }
+  #brand{
+    position:absolute; top:16px; left:16px; font-size:13px; letter-spacing:2px; color:var(--cyan-dim);
+  }
+
+  /* ---- Settings panel ---- */
+  #settings{
+    position:fixed; inset:0; background:rgba(0,0,0,.92); display:none;
+    flex-direction:column; padding:24px; z-index:10; overflow-y:auto;
+  }
+  #settings.open{ display:flex; }
+  #settings h2{ color:var(--cyan); font-weight:400; letter-spacing:2px; }
+  #settings label{ display:block; margin-top:16px; font-size:13px; color:var(--cyan-dim); }
+  #settings input{
+    width:100%; margin-top:6px; background:var(--panel); border:1px solid var(--cyan-dim);
+    color:var(--text); border-radius:8px; padding:10px; font-size:14px;
+  }
+  #settings .row{ display:flex; gap:10px; margin-top:24px; }
+  #settings button{
+    flex:1; padding:12px; border-radius:8px; border:1px solid var(--cyan); background:none;
+    color:var(--cyan); font-size:14px; cursor:pointer;
+  }
+  #settings button.primary{ background:var(--cyan); color:#000; }
+  #settings .hint{ font-size:12px; color:var(--cyan-dim); margin-top:4px; }
+  #settings .close{ align-self:flex-end; font-size:22px; background:none; border:none; color:var(--cyan); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="brand">A.R.C.</div>
+  <button id="settings-btn" title="Settings">&#9881;</button>
+
+  <div id="hud-wrap">
+    <svg id="hud" viewBox="0 0 300 300">
+      <g class="ring-spin"><circle class="ring" cx="150" cy="150" r="120" stroke-width="2" stroke-dasharray="6 10"/></g>
+      <g class="ring-spin-rev"><circle class="ring-dim" cx="150" cy="150" r="95" stroke-width="2" stroke-dasharray="2 6"/></g>
+      <circle class="ring" cx="150" cy="150" r="70" stroke-width="2"/>
+      <circle id="core" cx="150" cy="150" r="28"/>
+    </svg>
+  </div>
+
+  <div id="log"></div>
+
+  <div id="controls">
+    <button id="mic-btn">&#127908;</button>
+    <input id="text-input" type="text" placeholder="Type to ARC..." autocomplete="off">
+    <button id="send-btn">Send</button>
+  </div>
+</div>
+
+<div id="settings">
+  <button class="close" onclick="closeSettings()">&times;</button>
+  <h2>ARC SETTINGS</h2>
+
+  <label for="set-name">Your name (ARC will call you this)</label>
+  <input id="set-name" type="text" placeholder="e.g. Aakarsh">
+
+  <label for="set-secret">Access secret (optional)</label>
+  <input id="set-secret" type="password" placeholder="only if you set ARC_SHARED_SECRET">
+  <div class="hint">Only needed if you set an ARC_SHARED_SECRET env var on the server. Stored in this browser's localStorage, sent as a header to /api/gemini — never sent to Google directly. Your actual Gemini key now lives only on the server.</div>
+
+  <label for="set-model">Gemini model</label>
+  <input id="set-model" type="text" placeholder="gemini-2.5-flash">
+  <div class="hint">Default is gemini-2.5-flash. Google has scheduled this model for retirement on Oct 16, 2026 — if it stops responding after that date, change this field to its replacement.</div>
+
+  <div class="row">
+    <button onclick="clearNotes()">Clear notes</button>
+    <button class="primary" onclick="saveSettings()">Save</button>
+  </div>
+</div>
+
+<script>
+/* ============ CONFIG ============ */
+const GEMINI_MODEL_DEFAULT = 'gemini-2.5-flash'; // scheduled for retirement 2026-10-16 — swap here if it stops working
+const GEMINI_PROXY_ENDPOINT = '/api/gemini';
+
+/* ============ STATE ============ */
+let userName = localStorage.getItem('arc_userName') || '';
+let clientSecret = localStorage.getItem('arc_secret') || '';
+let model = localStorage.getItem('arc_model') || GEMINI_MODEL_DEFAULT;
+let notes = JSON.parse(localStorage.getItem('arc_notes') || '[]');
+let history = []; // [{role:'user'|'model', parts:[{text}]}]
+let listening = false;
+let recognition = null;
+
+const logEl = document.getElementById('log');
+const hud = document.getElementById('hud');
+const micBtn = document.getElementById('mic-btn');
+const textInput = document.getElementById('text-input');
+
+/* ============ LOG / SPEECH OUT ============ */
+function logLine(who, text){
+  const p = document.createElement('p');
+  p.className = who;
+  const prefix = who === 'user' ? 'You: ' : who === 'arc' ? 'ARC: ' : '';
+  p.textContent = prefix + text;
+  logEl.appendChild(p);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function speak(text){
+  if(!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.02;
+  u.pitch = 0.9;
+  window.speechSynthesis.speak(u);
+}
+
+/* ============ LOCAL SKILLS ============ */
+function tryLocalSkill(raw){
+  const text = raw.trim().toLowerCase();
+
+  // time / date
+  if(/\b(what'?s the time|current time|what time is it)\b/.test(text)){
+    return `It's ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}.`;
+  }
+  if(/\b(what'?s the date|today'?s date|what day is it)\b/.test(text)){
+    return `Today is ${new Date().toLocaleDateString([], {weekday:'long', year:'numeric', month:'long', day:'numeric'})}.`;
+  }
+
+  // timer: "set a timer for 5 minutes" / "timer for 30 seconds"
+  let m = text.match(/timer for (\d+)\s*(second|sec|minute|min|hour|hr)s?/);
+  if(m){
+    const n = parseInt(m[1], 10);
+    const unit = m[2];
+    let ms = n * 1000;
+    if(unit.startsWith('min')) ms = n * 60 * 1000;
+    if(unit.startsWith('hour') || unit === 'hr') ms = n * 3600 * 1000;
+    setTimeout(() => {
+      logLine('sys', `Timer done: ${n} ${unit}${n>1?'s':''}`);
+      speak(`${userName || 'Sir'}, your ${n} ${unit} timer is up.`);
+    }, ms);
+    return `Timer set for ${n} ${unit}${n>1?'s':''}.`;
+  }
+
+  // notes
+  m = raw.match(/^(?:take a note|note)[:\-]?\s*(.+)/i);
+  if(m){
+    notes.push({ text: m[1].trim(), ts: Date.now() });
+    localStorage.setItem('arc_notes', JSON.stringify(notes));
+    return 'Noted.';
+  }
+  if(/\b(read my notes|what are my notes|list my notes)\b/.test(text)){
+    if(notes.length === 0) return "You don't have any notes yet.";
+    return notes.map((n, i) => `${i+1}. ${n.text}`).join('  ');
+  }
+
+  // math: "what is 12 * 4 + 3" / "calculate 2^10"
+  m = text.match(/(?:what is|calculate|compute)\s+([0-9+\-*/^().\s]+)$/);
+  if(m || /^[0-9+\-*/^().\s]+$/.test(text)){
+    const expr = (m ? m[1] : text).replace(/\^/g, '**');
+    try{
+      // Restrict to digits/operators only before evaluating
+      if(!/^[0-9+\-*/().\s*]+$/.test(expr)) throw new Error('unsafe');
+      const result = Function(`"use strict"; return (${expr})`)();
+      if(typeof result === 'number' && isFinite(result)) return `That's ${result}.`;
+    }catch(e){ /* fall through to Gemini */ }
+  }
+
+  // open [site]
+  m = text.match(/^open (.+)/);
+  if(m){
+    let site = m[1].trim();
+    if(!site.includes('.')) site = site + '.com';
+    if(!/^https?:\/\//.test(site)) site = 'https://' + site;
+    window.open(site, '_blank');
+    return `Opening ${m[1].trim()}.`;
+  }
+
+  return null; // no local skill matched
+}
+
+/* ============ GEMINI FALLBACK ============ */
+// System prompt now lives server-side in api/gemini.js (kept in sync there).
+async function callGemini(userText){
+  const priorHistory = history.slice(-10); // last 10 turns, NOT including this message
+  const headers = { 'Content-Type':'application/json' };
+  if(clientSecret) headers['x-arc-secret'] = clientSecret;
+  try{
+    const res = await fetch(GEMINI_PROXY_ENDPOINT, {
+      method:'POST',
+      headers,
+      body: JSON.stringify({ message:userText, history:priorHistory, userName, model })
+    });
+    let data;
+    try{ data = await res.json(); }catch(e){ data = null; }
+    if(!res.ok){
+      console.error('Gemini proxy error', res.status, data);
+      const msg = data?.error || `status ${res.status}`;
+      return `I hit an error talking to Gemini (${msg}).`;
+    }
+    const reply = data?.reply || "I didn't get a usable response back.";
+    history.push({ role:'user', parts:[{ text:userText }] });
+    history.push({ role:'model', parts:[{ text: reply }] });
+    return reply;
+  }catch(err){
+    console.error(err);
+    return "I couldn't reach the ARC server — check your connection.";
+  }
+}
+
+/* ============ INPUT HANDLING ============ */
+async function handleInput(text){
+  if(!text || !text.trim()) return;
+  logLine('user', text);
+
+  const localReply = tryLocalSkill(text);
+  if(localReply !== null){
+    logLine('arc', localReply);
+    speak(localReply);
+    return;
+  }
+
+  logLine('sys', 'thinking…');
+  const reply = await callGemini(text);
+  // remove the "thinking…" line
+  const sysLines = logEl.querySelectorAll('.sys');
+  if(sysLines.length) sysLines[sysLines.length-1].remove();
+  logLine('arc', reply);
+  speak(reply);
+}
+
+/* ============ VOICE INPUT ============ */
+function setupRecognition(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR) return null;
+  const r = new SR();
+  r.lang = 'en-US';
+  r.interimResults = false;
+  r.maxAlternatives = 1;
+  r.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    handleInput(transcript);
+  };
+  r.onend = () => { listening = false; micBtn.classList.remove('on'); hud.classList.remove('listening'); };
+  r.onerror = (e) => { console.error('Speech recognition error', e.error); listening = false; micBtn.classList.remove('on'); hud.classList.remove('listening'); };
+  return r;
+}
+
+micBtn.addEventListener('click', () => {
+  if(!recognition){
+    recognition = setupRecognition();
+    if(!recognition){
+      logLine('sys', 'Voice input is not supported in this browser — use the text box instead.');
+      return;
+    }
+  }
+  if(listening){
+    recognition.stop();
+  } else {
+    listening = true;
+    micBtn.classList.add('on');
+    hud.classList.add('listening');
+    try{ recognition.start(); }catch(e){ /* already started */ }
+  }
+});
+
+document.getElementById('send-btn').addEventListener('click', () => {
+  const val = textInput.value;
+  textInput.value = '';
+  handleInput(val);
+});
+textInput.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter'){
+    const val = textInput.value;
+    textInput.value = '';
+    handleInput(val);
+  }
+});
+
+/* ============ SETTINGS PANEL ============ */
+function openSettings(){
+  document.getElementById('set-name').value = userName;
+  document.getElementById('set-secret').value = clientSecret;
+  document.getElementById('set-model').value = model;
+  document.getElementById('settings').classList.add('open');
+}
+function closeSettings(){ document.getElementById('settings').classList.remove('open'); }
+function saveSettings(){
+  userName = document.getElementById('set-name').value.trim();
+  clientSecret = document.getElementById('set-secret').value.trim();
+  model = document.getElementById('set-model').value.trim() || GEMINI_MODEL_DEFAULT;
+  localStorage.setItem('arc_userName', userName);
+  localStorage.setItem('arc_secret', clientSecret);
+  localStorage.setItem('arc_model', model);
+  closeSettings();
+  logLine('sys', 'Settings saved.');
+}
+function clearNotes(){
+  notes = [];
+  localStorage.setItem('arc_notes', '[]');
+  logLine('sys', 'Notes cleared.');
+}
+document.getElementById('settings-btn').addEventListener('click', openSettings);
+
+/* ============ INIT ============ */
+logLine('sys', userName ? `Welcome back, ${userName}.` : 'Welcome. Open settings to set your name.');
+
+/* ============ PWA: service worker ============ */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(console.error);
+  });
+}
+</script>
+</body>
+</html>
