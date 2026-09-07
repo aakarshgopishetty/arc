@@ -154,6 +154,7 @@
 <script>
 /* ============ CONFIG ============ */
 const GEMINI_MODEL_DEFAULT = 'gemini-2.5-flash'; // scheduled for retirement 2026-10-16 — swap here if it stops working
+const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash-lite'; // tried once if the primary model is still overloaded after retries
 const GEMINI_PROXY_ENDPOINT = '/api/gemini';
 
 /* ============ STATE ============ */
@@ -255,24 +256,43 @@ function tryLocalSkill(raw){
 
 /* ============ GEMINI FALLBACK ============ */
 // System prompt now lives server-side in api/gemini.js (kept in sync there).
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function tryCallGemini(userText, priorHistory, headers, useModel){
+  const res = await fetch(GEMINI_PROXY_ENDPOINT, {
+    method:'POST',
+    headers,
+    body: JSON.stringify({ message:userText, history:priorHistory, userName, model:useModel })
+  });
+  let data;
+  try{ data = await res.json(); }catch(e){ data = null; }
+  return { ok: res.ok, status: res.status, data };
+}
+
 async function callGemini(userText){
   const priorHistory = history.slice(-10); // last 10 turns, NOT including this message
   const headers = { 'Content-Type':'application/json' };
   if(clientSecret) headers['x-arc-secret'] = clientSecret;
+  const primaryModel = model || GEMINI_MODEL_DEFAULT;
   try{
-    const res = await fetch(GEMINI_PROXY_ENDPOINT, {
-      method:'POST',
-      headers,
-      body: JSON.stringify({ message:userText, history:priorHistory, userName, model })
-    });
-    let data;
-    try{ data = await res.json(); }catch(e){ data = null; }
-    if(!res.ok){
-      console.error('Gemini proxy error', res.status, data);
-      const msg = data?.error || `status ${res.status}`;
+    let result = await tryCallGemini(userText, priorHistory, headers, primaryModel);
+    const backoffs = [1500, 3000]; // ms — up to 2 retries on the primary model
+    for(let i = 0; i < backoffs.length && !result.ok && result.status === 503; i++){
+      console.warn(`Gemini overloaded (503) — retrying in ${backoffs[i]}ms`);
+      await sleep(backoffs[i]);
+      result = await tryCallGemini(userText, priorHistory, headers, primaryModel);
+    }
+    // primary model still overloaded — try a different, less-congested model once
+    if(!result.ok && result.status === 503 && GEMINI_FALLBACK_MODEL !== primaryModel){
+      console.warn(`Still overloaded — falling back to ${GEMINI_FALLBACK_MODEL}`);
+      result = await tryCallGemini(userText, priorHistory, headers, GEMINI_FALLBACK_MODEL);
+    }
+    if(!result.ok){
+      console.error('Gemini proxy error', result.status, result.data);
+      const msg = result.data?.error || `status ${result.status}`;
       return `I hit an error talking to Gemini (${msg}).`;
     }
-    const reply = data?.reply || "I didn't get a usable response back.";
+    const reply = result.data?.reply || "I didn't get a usable response back.";
     history.push({ role:'user', parts:[{ text:userText }] });
     history.push({ role:'model', parts:[{ text: reply }] });
     return reply;
@@ -314,16 +334,27 @@ function setupRecognition(){
   if(!SR) return null;
   const r = new SR();
   r.lang = 'en-US';
+  r.continuous = true;    // keep listening across pauses instead of cutting off after one word/phrase
   r.interimResults = false;
   r.maxAlternatives = 1;
+  r._transcript = '';
   r.onresult = (e) => {
-    if(r._handled) return; // some browsers (notably Android Chrome) can fire
-    r._handled = true;     // onresult more than once per session — only act on the first
-    const transcript = e.results[0][0].transcript;
-    try{ r.stop(); }catch(err){ /* already stopping */ }
-    handleInput(transcript);
+    // in continuous mode this can fire multiple times as you talk — each time
+    // with the next finalized chunk of speech, so accumulate rather than replace
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      if(e.results[i].isFinal){
+        r._transcript = (r._transcript ? r._transcript + ' ' : '') + e.results[i][0].transcript;
+      }
+    }
   };
-  r.onend = () => { listening = false; micBtn.classList.remove('on'); hud.classList.remove('listening'); };
+  r.onend = () => {
+    listening = false;
+    micBtn.classList.remove('on');
+    hud.classList.remove('listening');
+    const transcript = r._transcript.trim();
+    r._transcript = '';
+    if(transcript) handleInput(transcript); // sent once, when you tap the mic again to stop
+  };
   r.onerror = (e) => { console.error('Speech recognition error', e.error); listening = false; micBtn.classList.remove('on'); hud.classList.remove('listening'); };
   return r;
 }
@@ -339,7 +370,6 @@ micBtn.addEventListener('click', () => {
   if(listening){
     recognition.stop();
   } else {
-    recognition._handled = false;
     listening = true;
     micBtn.classList.add('on');
     hud.classList.add('listening');
@@ -396,4 +426,4 @@ if('serviceWorker' in navigator){
 }
 </script>
 </body>
-</html> 
+</html>
