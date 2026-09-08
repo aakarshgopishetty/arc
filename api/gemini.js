@@ -38,7 +38,7 @@
 // relying on it, and check the shape of a real 200 response the first time
 // you test it end to end.
 
-const GEMINI_MODEL_DEFAULT = 'gemini-2.5-flash';
+const GEMINI_MODEL_DEFAULT = 'gemini-2.5-pro'; // kept in sync with index.html's GEMINI_MODEL_DEFAULT
 
 const ALLOWED_ORIGINS = (process.env.ARC_ALLOWED_ORIGIN || '')
   .split(',')

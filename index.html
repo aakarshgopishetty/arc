@@ -153,8 +153,8 @@
 
 <script>
 /* ============ CONFIG ============ */
-const GEMINI_MODEL_DEFAULT = 'gemini-2.5-flash'; // scheduled for retirement 2026-10-16 — swap here if it stops working
-const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash-lite'; // tried once if the primary model is still overloaded after retries
+const GEMINI_MODEL_DEFAULT = 'gemini-2.5-pro'; // best quality; falls back to Flash below on 503 (overloaded) or 429 (quota)
+const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash'; // tried once if the primary model is overloaded or hits its rate limit
 const GEMINI_PROXY_ENDPOINT = '/api/gemini';
 
 /* ============ STATE ============ */
@@ -498,19 +498,26 @@ async function tryCallGemini(body, headers){
   return { ok: res.ok, status: res.status, data };
 }
 
-// Sends one body to /api/gemini with the standard 503 retry + fallback-model
-// behavior. Used for both the initial turn and the function-calling follow-up.
+// Sends one body to /api/gemini with retry + fallback-model behavior. Used
+// for both the initial turn and the function-calling follow-up.
+// - 503 (model overloaded): worth a couple of quick retries with backoff,
+//   since Google's own guidance is that capacity spikes are often brief.
+// - 429 (rate/quota limit hit): retrying in 1.5-3s won't help — the window
+//   that matters is 60s+ — so skip straight to the fallback model instead.
+// Either way, if the primary model still isn't working, fall back once to
+// GEMINI_FALLBACK_MODEL, which has a much higher free-tier quota.
 async function callGeminiWithRetry(body, headers, primaryModel){
   let result = await tryCallGemini(body, headers);
-  const backoffs = [1500, 3000]; // ms — up to 2 retries on the primary model
+  const backoffs = [1500, 3000]; // ms — up to 2 retries on the primary model, 503 only
   for(let i = 0; i < backoffs.length && !result.ok && result.status === 503; i++){
     console.warn(`Gemini overloaded (503) — retrying in ${backoffs[i]}ms`);
     await sleep(backoffs[i]);
     result = await tryCallGemini(body, headers);
   }
-  // primary model still overloaded — try a different, less-congested model once
-  if(!result.ok && result.status === 503 && GEMINI_FALLBACK_MODEL !== primaryModel){
-    console.warn(`Still overloaded — falling back to ${GEMINI_FALLBACK_MODEL}`);
+  // primary model still overloaded, or hit its rate/quota limit — try a
+  // different, less-congested/higher-quota model once
+  if(!result.ok && (result.status === 503 || result.status === 429) && GEMINI_FALLBACK_MODEL !== primaryModel){
+    console.warn(`Primary model unavailable (${result.status}) — falling back to ${GEMINI_FALLBACK_MODEL}`);
     result = await tryCallGemini({ ...body, model: GEMINI_FALLBACK_MODEL }, headers);
   }
   return result;
