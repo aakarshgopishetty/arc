@@ -160,7 +160,23 @@ const GEMINI_PROXY_ENDPOINT = '/api/gemini';
 /* ============ STATE ============ */
 let userName = localStorage.getItem('arc_userName') || '';
 let clientSecret = localStorage.getItem('arc_secret') || '';
+// Model names Google has retired or is actively winding down. If a user's
+// browser has one of these saved from an earlier session (including ones we
+// ourselves shipped as a default before Google pulled the rug — this has
+// already happened twice), silently drop it back to the current default
+// instead of repeating the same "model not found" error forever regardless
+// of what the current code says.
+const KNOWN_DEAD_MODELS = [
+  'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite',
+  'gemini-2.0-flash', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite', 'gemini-2.0-flash-lite-001',
+  'gemini-1.5-flash', 'gemini-1.5-pro'
+];
 let model = localStorage.getItem('arc_model') || GEMINI_MODEL_DEFAULT;
+if(KNOWN_DEAD_MODELS.includes(model)){
+  console.warn(`Saved model "${model}" is on the known-retired list — resetting to ${GEMINI_MODEL_DEFAULT}`);
+  model = GEMINI_MODEL_DEFAULT;
+  localStorage.setItem('arc_model', model);
+}
 let notes = JSON.parse(localStorage.getItem('arc_notes') || '[]');
 let reminders = JSON.parse(localStorage.getItem('arc_reminders') || '[]'); // [{id, time, text, isAlarm}]
 let history = []; // [{role:'user'|'model', parts:[{text}]}]
