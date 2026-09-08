@@ -4,7 +4,7 @@
 // to Gemini, since those are dynamic and must never be served stale
 // or stored in a cache that could linger with sensitive data.
 
-const CACHE_VERSION = 'arc-shell-v3'; // bump this string on every deploy that changes cached files
+const CACHE_VERSION = 'arc-shell-v4'; // bump this string on every deploy that changes cached files
 const APP_SHELL = [
   './',
   './index.html',

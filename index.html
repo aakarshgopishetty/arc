@@ -142,7 +142,7 @@
   <div class="hint">Only needed if you set an ARC_SHARED_SECRET env var on the server. Stored in this browser's localStorage, sent as a header to /api/gemini — never sent to Google directly. Your actual Gemini key now lives only on the server.</div>
 
   <label for="set-model">Gemini model</label>
-  <input id="set-model" type="text" placeholder="gemini-flash-latest">
+  <input id="set-model" type="text" placeholder="gemini-3.5-flash">
   <div class="hint">Default is gemini-2.5-flash. Google has scheduled this model for retirement on Oct 16, 2026 — if it stops responding after that date, change this field to its replacement.</div>
 
   <div class="row">
@@ -153,23 +153,25 @@
 
 <script>
 /* ============ CONFIG ============ */
-const GEMINI_MODEL_DEFAULT = 'gemini-pro-latest'; // Google-maintained alias — always points at their current recommended Pro model
-const GEMINI_FALLBACK_MODEL = 'gemini-flash-latest'; // ditto for Flash — avoids re-breaking every time a dated model (e.g. gemini-2.5-flash) gets retired early
+const GEMINI_MODEL_DEFAULT = 'gemini-3.1-pro-preview'; // pinned explicitly — Google's own 404 for gemini-2.5-pro named this as the replacement
+const GEMINI_FALLBACK_MODEL = 'gemini-3.5-flash'; // GA Flash model, confirmed active as of Sept 2026 — used if the primary is overloaded or hits its rate limit
 const GEMINI_PROXY_ENDPOINT = '/api/gemini';
 
 /* ============ STATE ============ */
 let userName = localStorage.getItem('arc_userName') || '';
 let clientSecret = localStorage.getItem('arc_secret') || '';
-// Model names Google has retired or is actively winding down. If a user's
-// browser has one of these saved from an earlier session (including ones we
-// ourselves shipped as a default before Google pulled the rug — this has
-// already happened twice), silently drop it back to the current default
-// instead of repeating the same "model not found" error forever regardless
-// of what the current code says.
+// Model names Google has retired, is actively winding down, or that turned
+// out to resolve (server-side) to a retired model despite looking current —
+// gemini-pro-latest/gemini-flash-latest did exactly that on this account, so
+// we no longer trust "-latest" aliases and pin explicit versions instead. If
+// a user's browser has one of these saved from an earlier session, silently
+// drop it back to the current default instead of repeating the same "model
+// not found" error forever regardless of what the current code says.
 const KNOWN_DEAD_MODELS = [
   'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite',
   'gemini-2.0-flash', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite', 'gemini-2.0-flash-lite-001',
-  'gemini-1.5-flash', 'gemini-1.5-pro'
+  'gemini-1.5-flash', 'gemini-1.5-pro',
+  'gemini-pro-latest', 'gemini-flash-latest'
 ];
 let model = localStorage.getItem('arc_model') || GEMINI_MODEL_DEFAULT;
 if(KNOWN_DEAD_MODELS.includes(model)){
