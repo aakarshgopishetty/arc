@@ -142,7 +142,7 @@
   <div class="hint">Only needed if you set an ARC_SHARED_SECRET env var on the server. Stored in this browser's localStorage, sent as a header to /api/gemini — never sent to Google directly. Your actual Gemini key now lives only on the server.</div>
 
   <label for="set-model">Gemini model</label>
-  <input id="set-model" type="text" placeholder="gemini-2.5-flash">
+  <input id="set-model" type="text" placeholder="gemini-flash-latest">
   <div class="hint">Default is gemini-2.5-flash. Google has scheduled this model for retirement on Oct 16, 2026 — if it stops responding after that date, change this field to its replacement.</div>
 
   <div class="row">
@@ -153,8 +153,8 @@
 
 <script>
 /* ============ CONFIG ============ */
-const GEMINI_MODEL_DEFAULT = 'gemini-2.5-pro'; // best quality; falls back to Flash below on 503 (overloaded) or 429 (quota)
-const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash'; // tried once if the primary model is overloaded or hits its rate limit
+const GEMINI_MODEL_DEFAULT = 'gemini-pro-latest'; // Google-maintained alias — always points at their current recommended Pro model
+const GEMINI_FALLBACK_MODEL = 'gemini-flash-latest'; // ditto for Flash — avoids re-breaking every time a dated model (e.g. gemini-2.5-flash) gets retired early
 const GEMINI_PROXY_ENDPOINT = '/api/gemini';
 
 /* ============ STATE ============ */
